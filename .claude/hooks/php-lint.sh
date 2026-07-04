@@ -26,6 +26,14 @@ if [[ ! -f "$file" ]]; then
   exit 0
 fi
 
+# PHP je v tomhle projektu jen v Dockeru — na hostiteli `php` být nemusí.
+# Když chybí, lint tiše přeskočíme (syntax se ověří v kontejneru:
+# `docker compose exec web php -l <soubor>`), ať hook nehlásí falešný poplach.
+if ! command -v php >/dev/null 2>&1; then
+  echo "ℹ️  PHP lint přeskočen (php není na hostiteli): $file"
+  exit 0
+fi
+
 # Lint.
 if ! output="$(php -l "$file" 2>&1)"; then
   echo "❌ PHP lint selhal v souboru: $file" >&2
