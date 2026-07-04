@@ -1,0 +1,4 @@
+# SQLite data (vzniká za běhu, neverzovat)
+/data/*.sqlite
+/data/*.sqlite-journal
+/data/*.sqlite-wal
