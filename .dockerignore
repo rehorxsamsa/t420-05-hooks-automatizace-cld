@@ -1,0 +1,7 @@
+.git
+.claude
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+README.md
+CLAUDE.md

@@ -1,0 +1,9 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8080:80"
+    volumes:
+      # Bind mount celého projektu — editace v src/ se projeví bez rebuildu
+      - .:/var/www/html
+    restart: unless-stopped
