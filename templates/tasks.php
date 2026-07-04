@@ -27,9 +27,11 @@ $e = static fn (string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
         li .title { flex: 1; }
         li.done .title { text-decoration: line-through; opacity: .6; }
         button { cursor: pointer; padding: .35rem .6rem; }
+        .project { font-size: .8rem; opacity: .55; margin-bottom: 1rem; }
     </style>
 </head>
 <body>
+    <p class="project">t420-05-hooks-automatizace-cld</p>
     <h1>📚 Task Library</h1>
     <p>Hotovo: <strong><?= $progress ?> %</strong></p>
     <div class="bar"><span style="width: <?= $progress ?>%"></span></div>

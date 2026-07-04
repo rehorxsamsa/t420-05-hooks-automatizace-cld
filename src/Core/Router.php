@@ -41,6 +41,7 @@ final class Router
         }
 
         http_response_code(404);
+        echo '<p style="font-size:.8rem;opacity:.55">t420-05-hooks-automatizace-cld</p>';
         echo '404 — stránka nenalezena';
     }
 }
