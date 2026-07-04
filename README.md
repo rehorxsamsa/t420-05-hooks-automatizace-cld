@@ -8,6 +8,33 @@
 
 ---
 
+## 🚀 Rychlý start
+
+PHP běží **jen v Dockeru** (na hostiteli žádné není). Rozběhnutí webu:
+
+```bash
+docker compose up -d --build     # web poběží na http://localhost:8080
+docker compose down              # zastavení
+```
+
+Aplikace je jednoduchý **správce úkolů** — přidat / odškrtnout / smazat, s pruhem hotovo v %.
+PHP příkazy (lint, testy) spouštěj **v kontejneru**, ne na hostiteli:
+
+```bash
+docker compose exec web php -l src/Service/TaskService.php
+```
+
+## 📄 Dokumentace v repu
+
+| Soubor | Pro koho | Obsah |
+|---|---|---|
+| **README.md** (tento) | student dílu 05 | výukový text o hoocích |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | vývojář | vrstvená architektura appky + dvě roviny projektu |
+| [DEMO.md](DEMO.md) | prezentující | jak appku předvést laikovi bez znalosti AI |
+| [CLAUDE.md](CLAUDE.md) | Claude Code | pokyny pro AI asistenta v tomhle repu |
+
+---
+
 ## 1. Co je hook a proč ho chtít
 
 **Hook** je shell příkaz, který Claude Code spustí **automaticky** v určitém bodě svého životního cyklu. Není to něco, co Claude „rozhodne" udělat — je to deterministické: stane se událost → spustí se tvůj příkaz.
