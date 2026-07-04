@@ -239,4 +239,22 @@ Nenulový kód + zpráva na stderr znamenají, že Claude Code problém zaznamen
 (a) → **Hook** (PostToolUse). (b) → **Skill**. (c) → **CLAUDE.md**. (d) → **permissions.deny** nebo **PreToolUse hook**.
 </details>
 
+## 🎲 7 zajímavostí o projektu
+
+1. **Appka je jen kulisa.** Hlavní hodnota repa není správce úkolů, ale tři hooky v `.claude/`. Task Library je jen reálný objekt, na kterém se automatizace demonstruje — proto je celý runtime (Docker, front controller, šablona) doplněný až dodatečně.
+
+2. **Meta bezpečnostní síť.** `php-lint.sh` (`PostToolUse`) lintuje PHP, který právě vygeneroval sám Claude. Nástroj tak hlídá kvalitu kódu, který sám píše — Claude fyzicky nemůže nechat za sebou syntakticky rozbitý soubor, aniž by o tom hned věděl.
+
+3. **Hook, který se musel naučit mlčet.** PHP je záměrně jen v Dockeru, na hostiteli žádné není — takže `php -l` na hostu končilo `php: command not found` a hlásilo falešný poplach po každé editaci. Hook proto teď pozná chybějící `php` a lint tiše přeskočí; syntax se ověří v kontejneru.
+
+4. **Nula závislostí.** Žádný Composer — namespace `App\` mapuje na `src/` ručně psaný PSR-4 autoloader o 26 řádcích.
+
+5. **Routing bez jediného `.htaccess`.** Žádný `mod_rewrite` ani přepisovací pravidla. Apache `FallbackResource /index.php` pošle každou neexistující cestu na front controller se zachovaným `REQUEST_URI`, který pak čte `Router`.
+
+6. **Přepínání stavu bez čtení.** `toggle()` nepotřebuje nejdřív načíst úkol — přepne ho jedním SQL: `UPDATE tasks SET done = 1 - done WHERE id = :id`.
+
+7. **Databáze, která se postaví sama.** `data/tasks.sqlite` neexistuje v repu — vznikne, vytvoří schéma a naseeduje se při úplně prvním requestu. Prvním ukázkovým úkolem je příznačně *„Naučit se Claude Code"*.
+
+---
+
 → Pokračuj na [Díl 06 — Git worktrees + agentní workflow](../t420-06-git-worktrees-cld/README.md)
