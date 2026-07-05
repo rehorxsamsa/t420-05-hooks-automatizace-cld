@@ -1,150 +1,144 @@
 # Architektura projektu
 
-Projekt má **dvě roviny**, které je dobré nezaměňovat:
+Dvě nezávislé roviny ve stejném repu:
 
-1. **PHP aplikace „Task Library"** (`src/`, `public/`, `templates/`) — malá webová appka na správu úkolů. Je předmětem výuky, ne cílem sama o sobě.
-2. **Automatizace Claude Code** (`.claude/`) — hooky, které se dějí kolem vývoje aplikace. Tohle je vlastní téma dílu 05.
+1. **PHP aplikace „Task Library"** (`src/`, `public/`, `templates/`) — vrstvená CRUD appka nad SQLite. Slouží jako realistický objekt, na kterém se demonstruje rovina 2; není cílem sama o sobě.
+2. **Automatizace Claude Code** (`.claude/`) — event-driven hooky kolem vývoje. Vlastní téma dílu 05 a hlavní hodnota repa.
 
-Tento dokument popisuje obě roviny a jak spolu drží.
+Dokument popisuje kontrakty, invarianty a záměrné kompromisy obou rovin. Kód sám je komentovaný, tady je řeč o rozhodnutích, ne o řádcích.
 
 ---
 
-## 1. Běhový řetězec aplikace
+## 1. Request pipeline
 
-Aplikace je **vrstvená**, bez frameworku a bez Composeru. Každý HTTP požadavek prochází pevným řetězcem, kde každá vrstva má jednu zodpovědnost a mluví jen se sousedem:
+Front controller + ruční vrstvení, žádný framework, žádný Composer. Jeden směr toku, každá vrstva mluví jen se sousedem směrem dolů:
 
 ```
 HTTP request
-   │
-   ▼
-public/index.php ......... vstupní bod (front controller): sestaví Router, zaregistruje routy
-   │
-   ▼
-Core\Router .............. (metoda + cesta) → callable; parsuje {id} v cestě
-   │
-   ▼
-Controller\TaskController  orchestruje request, čte $_POST, volá Service, vrací view/redirect
-   │
-   ▼
-Service\TaskService ...... business logika a validace (prázdný title, výpočet progress)
-   │
-   ▼
-Repository\TaskRepository  jediné místo se SQL (přes TaskRepositoryInterface)
-   │
-   ▼
-Core\Database ............ singleton PDO připojení k SQLite + auto-migrace/seed
-   │
-   ▼
-data/tasks.sqlite
+  → public/index.php        front controller: instancuje Router, registruje routy, dispatch()
+  → Core\Router             (method, path) → callable; extrahuje {id} jako named capture
+  → Controller\TaskController  I/O adaptér: $_POST ↔ Service, render šablony / 302 redirect
+  → Service\TaskService     business pravidla + validace (jediná vrstva s doménovou sémantikou)
+  → Repository\TaskRepository  jediné místo se SQL, za TaskRepositoryInterface
+  → Core\Database           statické PDO/SQLite připojení (singleton) + migrace/seed
+  → data/tasks.sqlite
 ```
 
-Napříč vrstvami putuje doménová entita **`Model\Task`** — nese data úkolu a přes `Task::fromRow()` se plní z DB řádku.
+Napříč vrstvami cestuje jediná doménová entita **`Model\Task`** (`Task::fromRow()` hydratuje z DB řádku).
 
-### Klíčové pravidlo vrstvení
+### Invarianty vrstvení
 
-> **Controller nikdy nesahá na Repository přímo — jen přes Service.**
+- **Controller → Service → Repository, nikdy přeskočit.** Controller nesmí znát SQL ani `Database`, Repository nesmí znát HTTP ani doménová pravidla. To udržuje veškerou logiku (validace, výpočet `progress`) na jednom místě a nechává krajní vrstvy hloupé a nahraditelné.
+- Tok je jednosměrný. Neexistují zpětné vazby ani sdílený stav mezi requesty kromě DB a singletonu připojení.
 
-Proč to má smysl: veškerá pravidla (validace, výpočty) žijí na jednom místě v Service a nemohou se rozejít mezi voláními. Controller zůstává hloupý (jen překládá HTTP ↔ volání Service), Repository zůstává hloupé (jen SQL). Když se změní pravidlo, měníš jeden soubor.
+### Kde je testovací šev (a kde není)
 
-### Dependency injection a testovatelnost
+DI existuje **jen na hranici Service**: `TaskService(?TaskRepositoryInterface $repo = null)` — v testu injektuješ in-memory fake a ověříš business logiku bez DB. To je záměrný a jediný šev.
 
-`TaskService` přijímá `TaskRepositoryInterface` konstruktorem (default `new TaskRepository()`). Díky rozhraní lze v testu podstrčit in-memory fake repository a testovat business logiku bez databáze. To je jediný „šev" v jinak přímočaré aplikaci a je tam záměrně.
+Pozor na jeho hranici: default `new TaskRepository()` váže Service na konkrétní implementaci, dokud fake explicitně neinjektuješ (poor-man's DI, žádný kontejner). A `TaskRepository` sám volá `Database::connection()` **staticky** — repository v izolaci netestovatelné, integrační test poběží proti reálnému SQLite souboru. Pro účel projektu dostačuje; při rozšiřování je tohle první místo, kde by připojení mělo jít dovnitř konstruktorem.
 
 ---
 
-## 2. Komponenty `src/` podrobně
+## 2. Komponenty `src/`
 
-| Komponenta | Zodpovědnost | Nesmí |
+| Komponenta | Kontrakt | Nesmí |
 |---|---|---|
-| `Core\Router` | mapuje `(HTTP metoda + cesta)` na callable; podpora `{id}` přes regex | znát business logiku |
-| `Controller\TaskController` | čte vstup (`$_POST`), volá Service, renderuje šablonu nebo redirect | sahat na Repository/DB, obsahovat pravidla |
-| `Service\TaskService` | validace, business rozhodnutí (`add()` odmítá prázdný title, `progress()` počítá % hotových) | znát SQL, znát HTTP |
-| `Repository\TaskRepository` | CRUD nad tabulkou `tasks` přes prepared statements | obsahovat business logiku |
-| `Core\Database` | jedno PDO připojení (singleton), schéma + seed při prvním běhu | být volané odjinud než z Repository |
-| `Model\Task` | doménová entita úkolu (`id`, `title`, `done`, `createdAt`) | mít chování navázané na DB/HTTP |
+| `Core\Router` | `add(method, pattern, handler)`, `dispatch(method, uri)`; `{id}` → `(?P<id>\d+)`, handler dostane `?int $id` | znát doménu |
+| `Controller\TaskController` | čte `$_POST`, deleguje na Service, renderuje / redirectuje | dotýkat se Repository/DB, nést pravidla |
+| `Service\TaskService` | `list/add/toggle/remove/progress`; `add()` trimuje a hází `InvalidArgumentException` na prázdný title | znát SQL nebo HTTP |
+| `Repository\TaskRepository` | implementuje `TaskRepositoryInterface`; `all()` přes `query()`, mutace přes prepared statements | nést business logiku |
+| `Core\Database` | `connection(): PDO` singleton, `ERRMODE_EXCEPTION`, `FETCH_ASSOC`, idempotentní `migrate()` | být volaná odjinud než z Repository |
+| `Model\Task` | `id`/`createdAt` readonly, `title`/`done` mutable; `fromRow()` factory | mít chování vázané na DB/HTTP |
 
-**Autoloading:** `autoload.php` je ruční PSR-4 loader — namespace `App\` → adresář `src/`. Např. `App\Controller\TaskController` → `src/Controller/TaskController.php`. Žádný Composer.
+**Rozhraní vs. použití:** `find(int): ?Task` Service přímo nevolá, ale `create()` ho používá interně — po `INSERT` přečte řádek přes `lastInsertId()` a vrátí hydratovaný `Task` (jinak `RuntimeException`). Není to tedy mrtvý kód, jen zatím nemá vlastní routu.
+
+**Autoloading:** ruční PSR-4 v `autoload.php`, prefix `App\` → `src/`, `strncmp` guard + `is_file`. Žádný Composer, žádné dev závislosti.
 
 ---
 
-## 3. Datový model
+## 3. Persistence
 
-Jediná tabulka `tasks`, vytvořená automaticky v `Database::migrate()`:
+Jedna tabulka `tasks`, DDL v `Database::migrate()` přes `CREATE TABLE IF NOT EXISTS`:
 
 | Sloupec | Typ | Poznámka |
 |---|---|---|
 | `id` | INTEGER PK AUTOINCREMENT | |
-| `title` | TEXT NOT NULL | název úkolu |
-| `done` | INTEGER NOT NULL DEFAULT 0 | 0/1, v PHP se přetypuje na `bool` |
-| `created_at` | TEXT NOT NULL | ISO 8601 (`date('c')`) |
+| `title` | TEXT NOT NULL | |
+| `done` | INTEGER NOT NULL DEFAULT 0 | 0/1, v PHP cast na `bool` v `Task::fromRow()` |
+| `created_at` | TEXT NOT NULL | ISO 8601, `date('c')` |
 
-Při prázdné tabulce se naseedují tři ukázkové úkoly. `toggle()` přepíná stav chytře přes `done = 1 - done` (žádné čtení-pak-zápis).
+**Charakteristiky, které stojí za pozornost:**
+
+- `migrate()` běží při každém *cold* připojení (jednou za proces). DDL je idempotentní; seed se řídí `SELECT COUNT(*)` — TOCTOU race na prázdné tabulce mezi souběžnými prvními requesty existuje, ale v single-writer SQLite je prakticky neškodný (nanejvýš duplicitní seed, což se v praxi neděje kvůli file locku).
+- `toggle()` je jediný `UPDATE ... SET done = 1 - done` — žádný read-modify-write, žádný lost update.
+- Bez explicitních transakcí a bez zámků na aplikační úrovni — spoléhá se na SQLite file-level locking. Odpovídá rozsahu; ne vzor pro concurrent write-heavy.
+- `progress()` volá `repository->all()` znovu, nezávisle na `list()` → index render vyvolá **dva** `SELECT *`. Při této velikosti zanedbatelné; při škálování by šlo agregovat v SQL (`SUM(done)`), tady je záměrně čitelnost > efektivita.
 
 ---
 
-## 4. Routy
+## 4. Routing a HTTP sémantika
 
-Definované ve `public/index.php`, obsluhované `TaskController`:
+Routy registruje `public/index.php`, obsluhuje `TaskController`:
 
-| Metoda | Cesta | Akce | Výsledek |
+| Metoda | Cesta | Handler | Výsledek |
 |---|---|---|---|
-| GET | `/` | `index()` | HTML seznam úkolů + progress bar |
-| POST | `/tasks` | `store()` | přidá úkol → redirect `/` |
-| POST | `/tasks/{id}/toggle` | `toggle()` | přepne hotovo → redirect `/` |
-| POST | `/tasks/{id}/delete` | `destroy()` | smaže úkol → redirect `/` |
+| GET | `/` | `index()` | HTML seznam + progress bar |
+| POST | `/tasks` | `store()` | create → 302 `/` |
+| POST | `/tasks/{id}/toggle` | `toggle()` | toggle → 302 `/` |
+| POST | `/tasks/{id}/delete` | `destroy()` | delete → 302 `/` |
 
-Používá se vzor **PRG (Post/Redirect/Get)** — mutace vždy končí redirectem na `/`, takže refresh stránky nepošle formulář znovu. Neexistující cesty vrací `Router` jako 404. Obě stránky (seznam i 404) nesou v hlavičce název projektu.
+- **PRG (Post/Redirect/Get):** každá mutace končí redirectem na `/`, refresh tedy neopakuje POST. `redirect()` posílá jen `Location` bez status kódu → PHP defaultuje na **302** (ne 303).
+- Router matchuje na `parse_url(..., PHP_URL_PATH)` — query string se ignoruje. Nematchnuté cesty → `404` s hlavičkou názvu projektu.
+- **Mimo scope (vědomě):** žádná CSRF ochrana, autentizace, ani output escaping vrstva mimo šablonu. Pro výukovou lokální appku OK; pro produkci by to byly první tři TODO.
 
 ---
 
 ## 5. Runtime (Docker)
 
-PHP je záměrně **jen v Dockeru** (workspace pravidlo — na hostiteli žádné PHP).
+PHP **jen v Dockeru** (workspace pravidlo, na hostiteli žádné PHP):
 
 ```
-docker-compose.yml
-   └── služba `web`  (build z Dockerfile)
-        ├── FROM php:8.3-apache  + rozšíření pdo_sqlite
-        ├── port 8080 → 80
-        ├── bind-mount  .:/var/www/html   (živé editace bez rebuildu)
-        └── Apache vhost (docker/000-default.conf)
-             ├── DocumentRoot → public/
-             └── FallbackResource /index.php  ← všechny neexistující cesty na front controller
+docker-compose.yml → služba web (build z Dockerfile)
+  ├── FROM php:8.3-apache + pdo_sqlite
+  ├── 8080 → 80
+  ├── bind-mount .:/var/www/html   (live edit bez rebuildu)
+  └── vhost docker/000-default.conf
+       ├── DocumentRoot → public/
+       └── FallbackResource /index.php   (vše mimo reálné soubory → front controller)
 ```
 
-**Proč `FallbackResource` místo mod_rewrite:** pošle každou cestu, která není reálný soubor, na `public/index.php` se zachovaným `REQUEST_URI`, který pak čte `Router`. Čistší než `.htaccess` a nevyžaduje `AllowOverride`.
+- **`FallbackResource` místo `mod_rewrite`:** direktiva žije přímo ve vhostu (`<Directory>`), ne v `.htaccess` — neexistující cesty jdou na `public/index.php` se zachovaným `REQUEST_URI`. Méně pohyblivých částí než rewrite ruleset. (Conf sice má `AllowOverride All`, ale `FallbackResource` ho ke své funkci nepotřebuje.)
+- **`data/` má `777`:** SQLite zapisuje `www-data` (jiné UID než host uživatel bind-mountu). `data/tasks.sqlite` vzniká a seeduje se sám při prvním requestu, je v `.gitignore`.
 
-**Práva k `data/`:** adresář má `777`, protože SQLite soubor zapisuje uživatel `www-data` (jiný UID než host). `data/tasks.sqlite` vzniká a seeduje se sám při prvním requestu a je mimo git (`.gitignore`).
-
-Spuštění: `docker compose up -d --build`, pak <http://localhost:8080>.
+Start: `docker compose up -d --build` → <http://localhost:8080>.
 
 ---
 
 ## 6. Automatizace Claude Code (`.claude/`)
 
-Souběžná rovina, která nemění chování aplikace, ale vývoj kolem ní. Konfigurace v `.claude/settings.json`, skripty v `.claude/hooks/`.
+Rovina, která nemění runtime aplikace, ale řídí vývojovou smyčku kolem ní. Konfigurace `.claude/settings.json`, skripty `.claude/hooks/`.
 
-| Hook | Událost | Kdy | Co dělá |
-|---|---|---|---|
-| `php-lint.sh` | `PostToolUse` (matcher `Edit\|Write`) | po editaci souboru | `php -l` nad `.php`; při chybě `exit 2` + stderr → Claude to hned vidí |
-| `session-start.sh` | `SessionStart` | na startu session | vypíše počet PHP souborů a stav gitu |
-| `user-prompt-guard.sh` | `UserPromptSubmit` | při odeslání promptu | varuje (`exit 0`) na destruktivní záměr |
+| Hook | Událost (matcher) | Kontrakt |
+|---|---|---|
+| `php-lint.sh` | `PostToolUse` (`Edit\|Write`) | `php -l` nad `.php`; syntax error → `exit 2` + stderr (Claude to čte jako blokující chybu) |
+| `session-start.sh` | `SessionStart` | informativní výpis počtu PHP souborů + stavu gitu |
+| `user-prompt-guard.sh` | `UserPromptSubmit` | heuristika na destruktivní záměr → varování, vždy `exit 0` (nikdy neblokuje) |
 
-Společný vzor všech hooků: kontext čtou z **env** (`CLAUDE_FILE_PATH`, …), a když env chybí, **fallback** vytáhne data z **JSON na stdin**. Env názvy se mezi verzemi liší, stdin JSON je nejspolehlivější zdroj.
+**Vstupní kontrakt hooků:** kontext primárně z env (`CLAUDE_FILE_PATH`, `CLAUDE_TOOL_*`); **fallback** parsuje JSON na stdin (`grep`+`sed` na `file_path`/`prompt`). Env názvy se mezi verzemi Claude Code liší → stdin JSON je stabilní zdroj pravdy. Drž tenhle dvojitý vzor při úpravách.
 
-**Sémantika exit kódů** je nosná: `exit 2` = tvrdá signalizace chyby Claudovi (php-lint), `exit 0` = jen informace/varování (guard). `php-lint.sh` navíc detekuje, že na hostiteli `php` není (jen v Dockeru), a v tom případě lint **tiše přeskočí** místo falešného poplachu — syntax se ověří v kontejneru (`docker compose exec web php -l <soubor>`).
+**Exit-kód sémantika je nosná:** `exit 2` = tvrdá blokující signalizace, `exit 0` = neblokující info/varování. `php-lint.sh` navíc detekuje absenci `php` na hostiteli (PHP je jen v Dockeru) a v tom případě lint **tiše přeskočí** — jinak by po každé editaci `.php` padal falešný `php: command not found` (`exit 2`). Reálnou syntax ověříš v kontejneru: `docker compose exec web php -l <soubor>`.
 
-### Kdy hook, kdy něco jiného
+### Rozhodovací tabulka: hook vs. alternativy
 
-| Chci… | Nástroj |
+| Cíl | Nástroj |
 |---|---|
-| aby se něco stalo **automaticky** na událost (lint po editaci) | **Hook** |
+| akce **automaticky** na událost (lint po editaci) | **Hook** |
 | pojmenovaný **postup na vyžádání** | **Skill** |
 | aby Claude **znal** konvence projektu | **CLAUDE.md** |
-| natvrdo **zakázat** akci | **permissions.deny** nebo **PreToolUse hook** |
+| natvrdo **zakázat** akci | **permissions.deny** nebo **PreToolUse** hook |
 
 ---
 
-## Shrnutí jednou větou
+## TL;DR
 
-Vrstvená PHP appka (`Router → Controller → Service → Repository → Database`, entita `Task` napříč) běžící v Docker/Apache s `public/` jako DocumentRoot, obklopená deterministickou automatizací Claude Code v `.claude/` — přičemž hlavní hodnota projektu je právě ta automatizace, ne appka samotná.
+Vrstvená PHP appka (`Router → Controller → Service → Repository → Database`, entita `Task` napříč, DI šev na hranici Service) na PHP 8.3/Apache s `public/` jako DocumentRoot a SQLite persistencí. Kolem ní deterministická, event-driven automatizace Claude Code v `.claude/` postavená na exit-kód sémantice a env/stdin fallbacku — a právě ta je předmětem dílu, ne appka.
