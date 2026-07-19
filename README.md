@@ -284,4 +284,6 @@ Nenulový kód + zpráva na stderr znamenají, že Claude Code problém zaznamen
 
 ---
 
+😄 Pro pobavení: [7 vtipů o projektu (in English)](JOKE.md)
+
 → Pokračuj na [Díl 06 — Git worktrees + agentní workflow](../t420-06-git-worktrees-cld/README.md)
